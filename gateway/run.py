@@ -20624,8 +20624,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Build session context
         context = build_session_context(source, self.config, session_entry)
         
-        # Set session context variables for tools (task-local, concurrency-safe)
+        # Set session context variables for tools (task-local, concurrency-safe).
         _session_env_tokens = self._set_session_env(context)
+        # Forward the triggering message's media paths so MCP tools can process the bytes via _meta.
+        # Set separately rather than through _set_session_env: that method is stubbed with fixed-arity
+        # lambdas across the gateway test suite, so widening its signature breaks unrelated tests.
+        # clear_session_vars (via _clear_session_env) already resets this var on teardown.
+        from gateway.session_context import set_session_media_paths
+        set_session_media_paths(getattr(event, "media_urls", None) or [])
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False

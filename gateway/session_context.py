@@ -100,6 +100,11 @@ _SESSION_UI_SESSION_ID: ContextVar = ContextVar("HERMES_UI_SESSION_ID", default=
 # so background-process notifications stay inside the originating Telegram
 # private-chat topic (those lanes route only with thread id + reply anchor).
 _SESSION_MESSAGE_ID: ContextVar = ContextVar("HERMES_SESSION_MESSAGE_ID", default=_UNSET)
+# Local filesystem paths of media (e.g. images) attached to the triggering message, downloaded by the
+# platform adapter. Forwarded to MCP tool calls via request _meta so out-of-process spine tools can do
+# deterministic processing on the actual bytes (the model only ever sees pixels, never the blob/path).
+# Holds a list[str], so it is NOT in _VAR_MAP (get_session_env is str-typed) — use get_session_media_paths().
+_SESSION_MEDIA_PATHS: ContextVar = ContextVar("HERMES_SESSION_MEDIA_PATHS", default=_UNSET)
 
 _SESSION_PROFILE: ContextVar = ContextVar("HERMES_SESSION_PROFILE", default=_UNSET)
 _BROWSER_CONTROL_PRINCIPAL: ContextVar = ContextVar(
@@ -238,6 +243,7 @@ def set_session_vars(
     profile: str = "",
     browser_control_principal: str = "",
     browser_control_transport_family: str = "",
+    media_paths: list | None = None,
     cwd: str = "",
     async_delivery: bool = True,
     ui_session_id: str = "",
@@ -287,6 +293,7 @@ def set_session_vars(
         _BROWSER_CONTROL_TRANSPORT_FAMILY.set(browser_control_transport_family),
         _CRON_SESSION.set(cron_session),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
+        _SESSION_MEDIA_PATHS.set(list(media_paths) if media_paths else []),
     ]
     try:
         from agent.runtime_cwd import set_session_cwd
@@ -334,6 +341,8 @@ def clear_session_vars(tokens: list) -> None:
     # behavior (CLI / unaware paths), not be mistaken for an opted-out
     # stateless adapter.
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    # Media paths hold a list (not a str): clear to [] so get_session_media_paths returns empty, not _UNSET.
+    _SESSION_MEDIA_PATHS.set([])
     try:
         from agent.runtime_cwd import clear_session_cwd
 
@@ -382,6 +391,9 @@ def reset_session_vars() -> None:
     # same inheritance-leak reason as the mapped vars above — see clear_session_vars,
     # which resets this var on the handler-exit path for the symmetric concern.
     _SESSION_ASYNC_DELIVERY.set(_UNSET)
+    # Media paths sit outside _VAR_MAP (list-typed, like the bool above), so reset them explicitly for the
+    # same cross-session inheritance-leak reason: a sibling turn's images must not survive into this one.
+    _SESSION_MEDIA_PATHS.set(_UNSET)
     try:
         from agent.runtime_cwd import clear_session_cwd
 
@@ -523,3 +535,26 @@ def async_delivery_supported() -> bool:
     if value is _UNSET:
         return True
     return bool(value)
+
+
+def set_session_media_paths(paths: list | None) -> None:
+    """Bind the triggering message's media paths for this task.
+
+    Deliberately separate from ``set_session_vars`` so the gateway's ``_set_session_env`` keeps its
+    upstream signature: many upstream tests stub that method with a fixed-arity lambda, and widening it
+    breaks them wholesale. ``clear_session_vars`` already resets this var, so the existing
+    ``_clear_session_env(tokens)`` teardown covers it — no extra token to thread.
+    """
+    _SESSION_MEDIA_PATHS.set(list(paths) if paths else [])
+
+
+def get_session_media_paths() -> list:
+    """Local filesystem paths of media on the triggering message (set by the gateway per turn).
+
+    Returns a ``list[str]`` (empty when none / never set). Separate from ``get_session_env`` because that
+    helper is str-typed; media is a list. No ``os.environ`` fallback — media is gateway-only state.
+    """
+    value = _SESSION_MEDIA_PATHS.get()
+    if value is _UNSET or not value:
+        return []
+    return list(value)
