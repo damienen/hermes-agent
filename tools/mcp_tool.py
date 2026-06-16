@@ -4610,6 +4610,20 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     "error": f"MCP server '{server_name}' is not connected"
                 }, ensure_ascii=False)
 
+        # Forward trusted, gateway-set session context to the MCP tool via request _meta. Read it HERE, in
+        # the sync handler body, while the gateway's task-local ContextVars are in scope — `_call` runs on a
+        # separate MCP event loop (via _run_on_mcp_loop) where ContextVars do NOT propagate. The model never
+        # supplies these (they ride _meta, not the tool `arguments`), so sender identity + media are
+        # unforgeable. Forwarded to every MCP server; keep the deployed Hermes scoped to the trusted spine.
+        from gateway.session_context import get_session_env, get_session_media_paths
+        _meta: dict = {}
+        _sender = get_session_env("HERMES_SESSION_USER_ID", "")
+        if _sender:
+            _meta["hermes.sender"] = _sender
+        _media = get_session_media_paths()
+        if _media:
+            _meta["hermes.media"] = _media
+
         async def _call():
             _mark_server_call_started(server)
             async with server._rpc_lock:
@@ -4619,7 +4633,12 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 # it and detect the gateway platform / session for routing.
                 server._pending_call_context = contextvars.copy_context()
                 try:
-                    result = await server.session.call_tool(tool_name, arguments=args)
+                    # Only pass meta when there is trusted context to forward, so non-gateway paths
+                    # (CLI/cron/tests) call exactly as before — zero behavior change without a session.
+                    if _meta:
+                        result = await server.session.call_tool(tool_name, arguments=args, meta=_meta)
+                    else:
+                        result = await server.session.call_tool(tool_name, arguments=args)
                 finally:
                     server._pending_call_context = None
             # The RPC round-trip completed — the session is demonstrably
