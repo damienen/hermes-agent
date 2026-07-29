@@ -4729,6 +4729,26 @@ def _bump_server_error(server_name: str) -> None:
         _server_breaker_opened_at[server_name] = time.monotonic()
 
 
+# Error payloads this module generates ITSELF when the transport is broken. Every one of these is
+# emitted from a path that has already called ``_bump_server_error``, so seeing one here means the
+# breaker has been accounted for at its source and must be left alone. Anything else in an ``error``
+# field came back from the server over a working connection.
+_TRANSPORT_ERROR_MARKERS = (
+    "is not connected",
+    "transport is down",
+    "is unreachable after",
+    "MCP call failed:",
+    "MCP call interrupted:",
+)
+
+
+def _is_transport_error_payload(message: object) -> bool:
+    """True when an ``error`` payload describes a broken transport rather than a tool's answer."""
+    if not isinstance(message, str):
+        return False
+    return any(marker in message for marker in _TRANSPORT_ERROR_MARKERS)
+
+
 def _reset_server_error(server_name: str) -> None:
     """Fully close the breaker for ``server_name``.
 
@@ -6391,15 +6411,26 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         try:
             result = _call_once()
-            # Check if the MCP tool itself returned an error
+            # A server that ANSWERS is not unreachable, even when the answer is a refusal.
+            #
+            # This used to bump the breaker for any response carrying an "error" field, which counted
+            # ordinary tool-level outcomes — permission denied, unknown id, validation failure — as
+            # evidence the transport was dying. Three such answers in a row opened the breaker and
+            # short-circuited every later call, including the very tool that would have resolved the
+            # condition. A server whose access-control tool correctly says "no" three times would
+            # lock the caller out of the tool that grants access.
+            #
+            # Real transport failures are still counted, from the two places that can observe them:
+            # the ``except`` branch below, and the internal paths that emit a transport error payload
+            # after calling ``_bump_server_error`` themselves. Recognising those payloads keeps this
+            # branch from resetting a bump they just made.
             try:
                 parsed = json.loads(result)
-                if "error" in parsed:
-                    _bump_server_error(server_name)
-                else:
-                    _reset_server_error(server_name)  # success — reset
+                err = parsed.get("error") if isinstance(parsed, dict) else None
             except (json.JSONDecodeError, TypeError):
-                _reset_server_error(server_name)  # non-JSON = success
+                err = None  # non-JSON = a plain successful result
+            if not _is_transport_error_payload(err):
+                _reset_server_error(server_name)
             return result
         except InterruptedError:
             return _interrupted_call_result()
