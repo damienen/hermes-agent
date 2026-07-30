@@ -152,7 +152,21 @@ function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT
   });
   return enqueueSend(() =>
     Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
-      .finally(() => clearTimeout(timer))
+      .finally(() => {
+        clearTimeout(timer);
+        // Stop the typing indicator. POST /typing sends 'composing' and nothing ever sent its
+        // counterpart, so once the agent had typed into a chat chat the indicator could sit there
+        // long after the reply had arrived — observed running for about two hours in a group while
+        // the bot was answering normally. Sending a message is the natural moment to stop typing,
+        // and this is the single chokepoint every outgoing message passes through.
+        //
+        // Fire-and-forget on purpose: presence is cosmetic, so a failure here must never delay or
+        // fail an actual message. Runs on the error path too — a send that times out should not
+        // leave the chat looking like the bot is still writing.
+        Promise.resolve()
+          .then(() => sock && sock.sendPresenceUpdate('paused', chatId))
+          .catch(() => {});
+      })
   );
 }
 
