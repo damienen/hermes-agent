@@ -1092,6 +1092,28 @@ app.post('/read', async (req, res) => {
   }
 });
 
+// Groups this account participates in.
+//
+// A group can only be referenced by its JID, and until now nothing exposed one: ids are written only
+// by the gateway, and only for groups it is already permitted to handle. That made a
+// not-yet-allowlisted group undiscoverable — its id was needed to allow it, and allowing it was the
+// only way to learn its id. Being mentioned in the group does not surface it either.
+app.get('/groups', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'not connected' });
+  }
+  try {
+    const all = await sock.groupFetchAllParticipating();
+    return res.json(Object.values(all).map(g => ({
+      id: g.id,
+      name: g.subject,
+      participants: Array.isArray(g.participants) ? g.participants.length : 0,
+    })));
+  } catch (err) {
+    return res.status(500).json({ error: String((err && err.message) || err) });
+  }
+});
+
 // Chat info
 app.get('/chat/:id', async (req, res) => {
   const chatId = req.params.id;
