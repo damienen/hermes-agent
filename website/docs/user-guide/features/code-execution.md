@@ -150,7 +150,7 @@ Fallback behavior in `project` mode: if `VIRTUAL_ENV` / `CONDA_PREFIX` is unset,
 Security-critical invariants are identical across both modes:
 
 - environment scrubbing (API keys, tokens, credentials stripped)
-- tool whitelist (scripts cannot call `execute_code` recursively, `delegate_task`, or MCP tools)
+- tool whitelist (scripts cannot call `execute_code` recursively or `delegate_task`; MCP tools are available only when `code_execution.mcp_tools` is set — see below)
 - resource limits (timeout, stdout cap, tool-call cap)
 
 Switching mode changes where scripts run and which interpreter runs them, not what credentials they can see or which tools they can call.
@@ -172,6 +172,10 @@ code_execution:
   mode: project      # project (default) | strict
   timeout: 300       # Max seconds per script (default: 300)
   max_tool_calls: 50 # Max tool calls per execution (default: 50)
+  mcp_tools: false      # false (default) | true | ["server-name", ...]
+                        # Expose MCP tools as `mcp__<server>__<tool>(**kwargs)` stubs inside
+                        # execute_code. Results come back as dicts; check for an "error" key.
+                        # Scripts that loop over MCP calls usually need a higher max_tool_calls.
 ```
 
 ## How Tool Calls Work Inside Scripts

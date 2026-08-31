@@ -2325,6 +2325,7 @@ code_execution:
   mode: project                # project (default) | strict
   timeout: 300                 # Max execution time in seconds
   max_tool_calls: 50           # Max tool calls within code execution
+  mcp_tools: false             # false (default) | true | [server names]: expose MCP tools as stubs inside execute_code
 ```
 
 **`mode`** controls the working directory and Python interpreter for scripts:

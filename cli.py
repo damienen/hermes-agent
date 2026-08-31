@@ -525,6 +525,7 @@ def load_cli_config() -> Dict[str, Any]:
         "code_execution": {
             "timeout": 300,    # Max seconds a sandbox script can run before being killed (5 min)
             "max_tool_calls": 50,  # Max RPC tool calls per execution
+            "mcp_tools": False,  # false | true | [server names]: expose MCP tools as stubs inside execute_code
         },
         "auxiliary": {
             "vision": {
