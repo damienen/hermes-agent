@@ -2447,6 +2447,25 @@ _TOOL_DOC_LINES = [
 ]
 
 
+def _mcp_doc_line(tool_name: str) -> str:
+    """One description line for an MCP stub: signature plus the first sentence."""
+    first = ""
+    try:
+        from tools.registry import registry
+
+        schema = registry.get_schema(tool_name)
+        if isinstance(schema, dict):
+            text = " ".join(str(schema.get("description") or "").split())
+            m = re.match(r"(.+?[.!?])(\s|$)", text)
+            first = (m.group(1) if m else text)[:160]
+    except Exception:
+        first = ""
+    line = f"  {tool_name}(**kwargs) -> dict"
+    if first:
+        line += f"\n    {first}"
+    return line
+
+
 def build_execute_code_schema(enabled_sandbox_tools: set = None,
                               mode: str = None) -> dict:
     """Build the execute_code schema with description listing only enabled tools.
@@ -2467,9 +2486,14 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         mode = _get_execution_mode()
 
     # Build tool documentation lines for only the enabled tools
-    tool_lines = "\n".join(
-        doc for name, doc in _TOOL_DOC_LINES if name in enabled_sandbox_tools
-    )
+    builtin_lines = [doc for name, doc in _TOOL_DOC_LINES if name in enabled_sandbox_tools]
+    mcp_lines = [
+        _mcp_doc_line(n)
+        for n in sorted(enabled_sandbox_tools)
+        if isinstance(n, str) and n.startswith("mcp__")
+    ]
+    tool_lines = "\n".join(builtin_lines + mcp_lines)
+    max_tool_calls = _load_config().get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
     # Build example import list from enabled tools
     import_examples = [n for n in ("web_search", "terminal") if n in enabled_sandbox_tools]
@@ -2515,7 +2539,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
         "loses that state.\n\n"
         f"Available via `from hermes_tools import ...`:\n\n"
         f"{tool_lines}\n\n"
-        "Limits: 5-minute timeout, max 50 tool calls per call. Stdout over "
+        f"Limits: 5-minute timeout, max {max_tool_calls} tool calls per call. Stdout over "
         "50KB shows head/tail inline; the FULL text is auto-saved to a file "
         "whose path rides in the result.\n\n"
         f"{cwd_note}\n\n"

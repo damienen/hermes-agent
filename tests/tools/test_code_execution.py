@@ -1037,6 +1037,32 @@ class TestSandboxMcpTools(unittest.TestCase):
         src = generate_hermes_tools_module(list(SANDBOX_ALLOWED_TOOLS))
         self.assertNotIn("mcp__", src)
 
+    def test_schema_lists_mcp_stubs_and_first_sentence(self):
+        from tools.registry import registry
+        schema = {"name": "mcp__srv__sheets_read",
+                  "description": "Read a range from a sheet. Second sentence is dropped.",
+                  "parameters": {"type": "object", "properties": {}}}
+        with patch.object(registry, "get_schema", return_value=schema), \
+             patch("tools.code_execution_tool._load_config", return_value={}):
+            desc = build_execute_code_schema({"terminal", "mcp__srv__sheets_read"})["description"]
+        self.assertIn("  mcp__srv__sheets_read(**kwargs) -> dict", desc)
+        self.assertIn("Read a range from a sheet.", desc)
+        self.assertNotIn("Second sentence", desc)
+        self.assertIn("  terminal(command: str", desc)
+
+    def test_schema_reports_configured_max_tool_calls(self):
+        with patch("tools.code_execution_tool._load_config", return_value={"max_tool_calls": 200}):
+            desc = build_execute_code_schema({"terminal"})["description"]
+        self.assertIn("max 200 tool calls", desc)
+        with patch("tools.code_execution_tool._load_config", return_value={}):
+            desc = build_execute_code_schema({"terminal"})["description"]
+        self.assertIn("max 50 tool calls", desc)
+
+    def test_schema_without_mcp_is_unchanged(self):
+        with patch("tools.code_execution_tool._load_config", return_value={}):
+            desc = build_execute_code_schema({"terminal"})["description"]
+        self.assertNotIn("mcp__", desc)
+
 
 if __name__ == "__main__":
     unittest.main()
