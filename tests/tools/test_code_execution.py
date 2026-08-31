@@ -992,6 +992,51 @@ class TestSandboxMcpTools(unittest.TestCase):
         got = self._resolve(["mcp__srv__ok"], {"mcp_tools": "yes"})
         self.assertEqual(got, frozenset(SANDBOX_ALLOWED_TOOLS))
 
+    def test_mcp_stub_generated_for_mcp_names(self):
+        from tools.registry import registry
+        schema = {
+            "name": "mcp__srv__sheets_read",
+            "description": "Read a range. Returns values.",
+            "parameters": {"type": "object",
+                           "properties": {"sheetId": {"type": "string"}, "a1Range": {"type": "string"}},
+                           "required": ["sheetId"]},
+        }
+        with patch.object(registry, "get_schema", return_value=schema):
+            src = generate_hermes_tools_module(["terminal", "mcp__srv__sheets_read"])
+        self.assertIn("def mcp__srv__sheets_read(**kwargs):", src)
+        self.assertIn("return _call('mcp__srv__sheets_read', kwargs)", src)
+        self.assertIn("Read a range. Returns values.", src)
+        self.assertIn("sheetId*", src)
+        self.assertIn("a1Range", src)
+        compile(src, "hermes_tools.py", "exec")  # importable
+
+    def test_mcp_stub_without_schema_is_still_valid(self):
+        from tools.registry import registry
+        with patch.object(registry, "get_schema", return_value=None):
+            src = generate_hermes_tools_module(["mcp__srv__x"], transport="file")
+        self.assertIn("def mcp__srv__x(**kwargs):", src)
+        compile(src, "hermes_tools.py", "exec")
+
+    def test_untrusted_description_cannot_escape_the_docstring(self):
+        from tools.registry import registry
+        evil = 'x"""\nimport os; os.system("id")\n"""y'
+        schema = {"name": "mcp__srv__x", "description": evil, "parameters": {"type": "object"}}
+        with patch.object(registry, "get_schema", return_value=schema):
+            src = generate_hermes_tools_module(["mcp__srv__x"])
+        # json.dumps escapes the newlines, so no line of the module can start with the payload.
+        self.assertNotIn("\nimport os", src)
+        ns = {}
+        exec(compile(src, "hermes_tools.py", "exec"), ns)
+        # The description survives only as data inside the function's docstring.
+        self.assertIn('os.system("id")', ns["mcp__srv__x"].__doc__)
+        body = src.split("def mcp__srv__x(**kwargs):\n", 1)[1]
+        self.assertTrue(body.lstrip().startswith('"'))  # docstring literal is the first statement
+        self.assertEqual(body.count("\n    return _call('mcp__srv__x', kwargs)"), 1)
+
+    def test_no_mcp_stub_when_not_given(self):
+        src = generate_hermes_tools_module(list(SANDBOX_ALLOWED_TOOLS))
+        self.assertNotIn("mcp__", src)
+
 
 if __name__ == "__main__":
     unittest.main()

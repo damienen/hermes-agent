@@ -559,19 +559,60 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
     return None
 
 
+_MCP_STUB_DESC_MAX = 400
+
+
+def _mcp_stub_source(tool_name: str, schema: Optional[dict]) -> str:
+    """Source for one MCP tool stub: ``def <name>(**kwargs)`` forwarding to _call.
+
+    The docstring is built with ``json.dumps`` — MCP descriptions are text
+    from a third-party server, and a ``\"\"\"`` inside one must stay data,
+    never become code in the generated module.
+    """
+    desc = ""
+    props: Dict[str, Any] = {}
+    required: List[str] = []
+    if isinstance(schema, dict):
+        desc = str(schema.get("description") or "")
+        params = schema.get("parameters")
+        if isinstance(params, dict):
+            if isinstance(params.get("properties"), dict):
+                props = params["properties"]
+            if isinstance(params.get("required"), list):
+                required = [str(r) for r in params["required"]]
+    desc = " ".join(desc.split())
+    if len(desc) > _MCP_STUB_DESC_MAX:
+        desc = desc[: _MCP_STUB_DESC_MAX - 1] + "…"
+    lines = [desc] if desc else []
+    if props:
+        names = ", ".join(f"{k}*" if k in required else k for k in sorted(props))
+        lines.append(f"kwargs: {names}  (* = required)")
+    lines.append("Returns the tool's JSON result as a dict; check for an 'error' key.")
+    doc = json.dumps("\n".join(lines))
+    return (
+        f"def {tool_name}(**kwargs):\n"
+        f"    {doc}\n"
+        f"    return _call({tool_name!r}, kwargs)\n"
+    )
+
+
 def generate_hermes_tools_module(enabled_tools: List[str],
                                  transport: str = "uds") -> str:
     """
     Build the source code for the hermes_tools.py stub module.
 
-    Only tools in both SANDBOX_ALLOWED_TOOLS and enabled_tools get stubs.
+    Built-ins get stubs when in both SANDBOX_ALLOWED_TOOLS and enabled_tools;
+    any ``mcp__`` name in enabled_tools gets a ``**kwargs`` stub (callers pass
+    the set from resolve_sandbox_tools, which applies the config gate).
 
     Args:
         enabled_tools: Tool names enabled in the current session.
         transport: ``"uds"`` for Unix domain socket (local backend) or
                    ``"file"`` for file-based RPC (remote backends).
     """
-    tools_to_generate = sorted(SANDBOX_ALLOWED_TOOLS & set(enabled_tools))
+    names = set(enabled_tools or ())
+    tools_to_generate = sorted(SANDBOX_ALLOWED_TOOLS & names)
+    mcp_names = sorted(n for n in names if isinstance(n, str) and n.startswith("mcp__"))
 
     stub_functions = []
     export_names = []
@@ -585,6 +626,17 @@ def generate_hermes_tools_module(enabled_tools: List[str],
             f"    return _call({func_name!r}, {args_expr})\n"
         )
         export_names.append(func_name)
+
+    if mcp_names:
+        from tools.registry import registry
+
+        for tool_name in mcp_names:
+            try:
+                schema = registry.get_schema(tool_name)
+            except Exception:
+                schema = None
+            stub_functions.append(_mcp_stub_source(tool_name, schema))
+            export_names.append(tool_name)
 
     if transport == "file":
         header = _FILE_TRANSPORT_HEADER
