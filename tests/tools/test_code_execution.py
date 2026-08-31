@@ -923,3 +923,16 @@ class TestRpcTokenAuthorization(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# ---------------------------------------------------------------------------
+# MCP tools inside the sandbox (code_execution.mcp_tools)
+# ---------------------------------------------------------------------------
+
+class TestSandboxMcpTools(unittest.TestCase):
+    def test_mcp_server_for_tool_uses_registration_provenance(self):
+        import tools.mcp_tool as mcp_tool
+        with patch.dict(mcp_tool._mcp_tool_server_names,
+                        {"mcp__srv__sheets_read": "srv"}, clear=False):
+            self.assertEqual(mcp_tool.mcp_server_for_tool("mcp__srv__sheets_read"), "srv")
+            self.assertIsNone(mcp_tool.mcp_server_for_tool("mcp__other__x"))
+            self.assertIsNone(mcp_tool.mcp_server_for_tool("terminal"))

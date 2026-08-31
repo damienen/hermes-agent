@@ -7986,6 +7986,19 @@ def discover_mcp_tools() -> List[str]:
         if cookie not in (None, _LOCK_UNAVAILABLE):
             cookie.release()
 
+def mcp_server_for_tool(tool_name: str) -> Optional[str]:
+    """Return the logical MCP server name a registered tool came from.
+
+    Uses the provenance captured at registration (``_mcp_tool_server_names``)
+    rather than splitting the ``mcp__{server}__{tool}`` string, which is
+    ambiguous when server names contain underscores. Returns None for
+    non-MCP tools and for names that were never registered.
+    """
+    if not tool_name.startswith(MCP_TOOL_NAME_PREFIX):
+        return None
+    with _lock:
+        return _mcp_tool_server_names.get(tool_name)
+
 def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
     """Check if an MCP tool belongs to a server that supports parallel tool calls.
 
