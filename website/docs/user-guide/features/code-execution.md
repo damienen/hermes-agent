@@ -178,6 +178,8 @@ code_execution:
                         # Scripts that loop over MCP calls usually need a higher max_tool_calls.
 ```
 
+Works with Tool Search: MCP tools that are deferred behind `tool_search`/`tool_call` are still importable in the sandbox when their server is permitted here — the sandbox uses the session's pre-deferral tool set, the same one `tool_call` can reach.
+
 ## How Tool Calls Work Inside Scripts
 
 When your script calls a function like `web_search("query")`:

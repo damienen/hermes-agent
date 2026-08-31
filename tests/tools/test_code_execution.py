@@ -46,6 +46,7 @@ def _fresh_kernel_registry():
     shutdown_all_kernels()
 import sys
 import threading
+import types
 import unittest
 from unittest.mock import patch, MagicMock
 
@@ -1099,6 +1100,109 @@ class TestSandboxMcpTools(unittest.TestCase):
             ))
         self.assertNotEqual(result["status"], "success")
         self.assertIn("mcp__srv__sheets_read", result.get("error", "") + result.get("output", "") + json.dumps(result))
+
+    @staticmethod
+    def _fake_tool_search(enabled):
+        """A stand-in for ``tools.tool_search``.
+
+        The real module pulls in the BM25 stack at import time, which this suite
+        does not depend on. ``scoped_deferrable_names`` keeps its real contract
+        (deferrable names read out of the definitions it is handed) so the test
+        still proves the pre-deferral definitions are what feed the universe.
+        """
+        mod = types.ModuleType("tools.tool_search")
+        cfg = MagicMock()
+        cfg.enabled = enabled
+        mod.load_config = MagicMock(return_value=cfg)
+        mod.scoped_deferrable_names = MagicMock(side_effect=lambda defs: frozenset(
+            name for name in ((d.get("function") or {}).get("name", "") for d in defs)
+            if name.startswith("mcp__")
+        ))
+        return mod
+
+    def test_deferred_mcp_tools_still_reach_the_sandbox(self):
+        """With Tool Search active, agent.valid_tool_names lacks the MCP names (they are
+        deferred behind the bridge). The sandbox must be resolved from the session's
+        pre-deferral universe, as tool_call is, or the schema advertises stubs the
+        generated module never gets."""
+        import model_tools
+        pre_deferral_defs = [
+            {"type": "function", "function": {"name": "terminal", "description": "",
+                                              "parameters": {"type": "object"}}},
+            {"type": "function", "function": {"name": "mcp__srv__sheets_read", "description": "Read.",
+                                              "parameters": {"type": "object"}}},
+        ]
+        ts = self._fake_tool_search("auto")
+        with patch("model_tools.get_tool_definitions", return_value=pre_deferral_defs) as gtd, \
+             patch.dict(sys.modules, {"tools.tool_search": ts}):
+            universe = model_tools.sandbox_tool_universe(
+                # what the executor passes as enabled_tools when deferral is active
+                ["terminal", "tool_search", "tool_describe", "tool_call"],
+                enabled_toolsets=None, disabled_toolsets=None,
+            )
+        self.assertIn("mcp__srv__sheets_read", universe)
+        self.assertIn("terminal", universe)
+        gtd.assert_called_once()
+        self.assertTrue(gtd.call_args.kwargs.get("skip_tool_search_assembly"))
+
+    def test_sandbox_universe_unchanged_when_tool_search_off(self):
+        import model_tools
+        ts = self._fake_tool_search("off")
+        with patch("model_tools.get_tool_definitions") as gtd, \
+             patch.dict(sys.modules, {"tools.tool_search": ts}):
+            universe = model_tools.sandbox_tool_universe(
+                ["terminal"], enabled_toolsets=None, disabled_toolsets=None)
+        self.assertEqual(universe, ["terminal"])
+        gtd.assert_not_called()
+
+    def test_stub_generator_skips_names_that_are_not_identifiers(self):
+        # The config gate already filters these, but the generator emits raw `def <name>`
+        # source and must not depend on its caller for that invariant.
+        from tools.registry import registry
+        with patch.object(registry, "get_schema", return_value=None):
+            src = generate_hermes_tools_module(
+                ["mcp__srv__ok", "mcp__srv__bad-name", "mcp__srv__class"])
+        self.assertIn("def mcp__srv__ok(", src)
+        self.assertIn("def mcp__srv__class(", src)  # a valid identifier, not a keyword
+        self.assertNotIn("bad-name", src)
+        compile(src, "hermes_tools.py", "exec")
+
+    def test_non_ascii_description_survives_the_stub_docstring(self):
+        from tools.registry import registry
+        schema = {"name": "mcp__srv__x", "description": "emoji \U0001f600 tail",
+                  "parameters": {"type": "object"}}
+        with patch.object(registry, "get_schema", return_value=schema):
+            src = generate_hermes_tools_module(["mcp__srv__x"])
+        ns = {}
+        exec(compile(src, "hermes_tools.py", "exec"), ns)
+        doc = ns["mcp__srv__x"].__doc__
+        # ensure_ascii=True would emit \ud83d\ude00, which Python reads back as a lone
+        # surrogate pair: the module is unwritable as UTF-8 and the docstring is mojibake.
+        doc.encode("utf-8")
+        src.encode("utf-8")
+        self.assertIn("\U0001f600", doc)
+
+    def test_schema_caps_the_mcp_stub_listing(self):
+        from tools.code_execution_tool import _MCP_DOC_LINES_MAX
+        from tools.registry import registry
+        self.assertEqual(_MCP_DOC_LINES_MAX, 40)
+        names = {f"mcp__srv__tool_{i:02d}" for i in range(45)}
+        with patch.object(registry, "get_schema", return_value=None), \
+             patch("tools.code_execution_tool._load_config", return_value={}):
+            desc = build_execute_code_schema({"terminal"} | names)["description"]
+        self.assertEqual(desc.count("(**kwargs) -> dict"), _MCP_DOC_LINES_MAX)
+        self.assertIn("and 5 more MCP tools", desc)
+        self.assertIn("mcp__srv__tool_00", desc)
+        self.assertNotIn("mcp__srv__tool_44", desc)
+
+    def test_schema_does_not_add_the_overflow_line_under_the_cap(self):
+        from tools.registry import registry
+        with patch.object(registry, "get_schema", return_value=None), \
+             patch("tools.code_execution_tool._load_config", return_value={}):
+            desc = build_execute_code_schema(
+                {"terminal", "mcp__srv__a", "mcp__srv__b", "mcp__srv__c"})["description"]
+        self.assertEqual(desc.count("(**kwargs) -> dict"), 3)
+        self.assertNotIn("more MCP tools", desc)
 
 
 if __name__ == "__main__":

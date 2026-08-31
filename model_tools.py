@@ -1237,6 +1237,48 @@ def _emit_post_tool_call_hook(
         logger.debug("post_tool_call hook error: %s", _hook_err)
 
 
+def sandbox_tool_universe(
+    enabled_tools: Optional[List[str]],
+    enabled_toolsets: Optional[List[str]] = None,
+    disabled_toolsets: Optional[List[str]] = None,
+) -> Optional[List[str]]:
+    """The tool names ``execute_code`` may expose to a script for this session.
+
+    ``enabled_tools`` is the model-facing list. When Tool Search is active it has
+    had every deferrable (MCP/plugin) tool removed and replaced by the bridge —
+    but those tools are still callable by the session through ``tool_call``,
+    scoped to its toolsets. The sandbox uses that same pre-deferral universe so
+    the ``execute_code`` schema (built before assembly) and the generated stub
+    module agree. Tool Search off → ``enabled_tools`` unchanged.
+
+    This is not a widening: every name added here is one the model can already
+    invoke via ``tool_call`` in the same session, through the same scoping gate.
+    ``code_execution.mcp_tools`` still decides which of them get a stub.
+    """
+    if enabled_tools is None:
+        return None
+    try:
+        from tools.tool_search import (
+            load_config as _load_ts_config,
+            scoped_deferrable_names,
+        )
+        if _load_ts_config().enabled == "off":
+            return enabled_tools
+        scoped_defs = get_tool_definitions(
+            enabled_toolsets=enabled_toolsets,
+            disabled_toolsets=disabled_toolsets,
+            quiet_mode=True,
+            skip_tool_search_assembly=True,
+        ) or []
+        deferred = scoped_deferrable_names(scoped_defs)
+    except Exception as exc:
+        logger.debug("sandbox_tool_universe: falling back to enabled_tools (%s)", exc)
+        return enabled_tools
+    if not deferred:
+        return enabled_tools
+    return list(dict.fromkeys([*enabled_tools, *sorted(deferred)]))
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
@@ -1541,7 +1583,11 @@ def handle_function_call(
             if function_name == "execute_code":
                 # Prefer the caller-provided list so subagents can't overwrite
                 # the parent's tool set via the process-global.
-                sandbox_enabled = enabled_tools if enabled_tools is not None else _last_resolved_tool_names
+                sandbox_enabled = sandbox_tool_universe(
+                    enabled_tools,
+                    enabled_toolsets=enabled_toolsets,
+                    disabled_toolsets=disabled_toolsets,
+                ) if enabled_tools is not None else _last_resolved_tool_names
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
                     return registry.dispatch(
                         function_name, next_args,

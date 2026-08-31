@@ -114,6 +114,12 @@ def _allowed_mcp_tools(session_tools: set) -> frozenset:
     else:
         return frozenset()
 
+    prefixes = ()
+    if servers is not None:
+        prefixes = tuple(
+            f"{MCP_TOOL_NAME_PREFIX}{sanitize_mcp_name_component(s)}__" for s in servers
+        )
+
     allowed = set()
     for name in session_tools:
         if not isinstance(name, str) or not name.startswith(MCP_TOOL_NAME_PREFIX):
@@ -127,12 +133,8 @@ def _allowed_mcp_tools(session_tools: set) -> frozenset:
             if server is not None:
                 if server not in servers:
                     continue
-            else:
-                prefixes = tuple(
-                    f"{MCP_TOOL_NAME_PREFIX}{sanitize_mcp_name_component(s)}__" for s in servers
-                )
-                if not name.startswith(prefixes):
-                    continue
+            elif not name.startswith(prefixes):
+                continue
         allowed.add(name)
     return frozenset(allowed)
 
@@ -588,7 +590,10 @@ def _mcp_stub_source(tool_name: str, schema: Optional[dict]) -> str:
         names = ", ".join(f"{k}*" if k in required else k for k in sorted(props))
         lines.append(f"kwargs: {names}  (* = required)")
     lines.append("Returns the tool's JSON result as a dict; check for an 'error' key.")
-    doc = json.dumps("\n".join(lines))
+    # ensure_ascii=False: \uXXXX escapes of astral characters read back as lone
+    # surrogates, which makes the generated module unwritable as UTF-8. Control
+    # characters, quotes and backslashes are still escaped either way.
+    doc = json.dumps("\n".join(lines), ensure_ascii=False)
     return (
         f"def {tool_name}(**kwargs):\n"
         f"    {doc}\n"
@@ -602,8 +607,9 @@ def generate_hermes_tools_module(enabled_tools: List[str],
     Build the source code for the hermes_tools.py stub module.
 
     Built-ins get stubs when in both SANDBOX_ALLOWED_TOOLS and enabled_tools;
-    any ``mcp__`` name in enabled_tools gets a ``**kwargs`` stub (callers pass
-    the set from resolve_sandbox_tools, which applies the config gate).
+    any ``mcp__`` name in enabled_tools that is a bare identifier gets a
+    ``**kwargs`` stub (callers pass the set from resolve_sandbox_tools, which
+    applies the config gate).
 
     Args:
         enabled_tools: Tool names enabled in the current session.
@@ -612,7 +618,15 @@ def generate_hermes_tools_module(enabled_tools: List[str],
     """
     names = set(enabled_tools or ())
     tools_to_generate = sorted(SANDBOX_ALLOWED_TOOLS & names)
-    mcp_names = sorted(n for n in names if isinstance(n, str) and n.startswith("mcp__"))
+    # The generator emits ``def <name>(...)`` source, so a name that is not a bare
+    # identifier would be a syntax error in the module. resolve_sandbox_tools
+    # already filters these out; enforce the invariant here too rather than trust
+    # every caller with it.
+    mcp_names = sorted(
+        n for n in names
+        if isinstance(n, str) and n.startswith("mcp__")
+        and n.isidentifier() and not keyword.iskeyword(n)
+    )
 
     stub_functions = []
     export_names = []
@@ -2447,6 +2461,12 @@ _TOOL_DOC_LINES = [
 ]
 
 
+# Ceiling on how many MCP stub lines the execute_code description lists. A
+# session wired to several MCP servers can enable hundreds of tools; the full
+# listing would dwarf the rest of the schema in every request.
+_MCP_DOC_LINES_MAX = 40
+
+
 def _mcp_doc_line(tool_name: str) -> str:
     """One description line for an MCP stub: signature plus the first sentence."""
     first = ""
@@ -2487,11 +2507,16 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
 
     # Build tool documentation lines for only the enabled tools
     builtin_lines = [doc for name, doc in _TOOL_DOC_LINES if name in enabled_sandbox_tools]
-    mcp_lines = [
-        _mcp_doc_line(n)
-        for n in sorted(enabled_sandbox_tools)
+    mcp_names = [
+        n for n in sorted(enabled_sandbox_tools)
         if isinstance(n, str) and n.startswith("mcp__")
     ]
+    mcp_lines = [_mcp_doc_line(n) for n in mcp_names[:_MCP_DOC_LINES_MAX]]
+    if len(mcp_names) > _MCP_DOC_LINES_MAX:
+        mcp_lines.append(
+            f"  … and {len(mcp_names) - _MCP_DOC_LINES_MAX} more MCP tools, all importable "
+            "from hermes_tools by their registered name (mcp__<server>__<tool>)."
+        )
     tool_lines = "\n".join(builtin_lines + mcp_lines)
     max_tool_calls = _load_config().get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
