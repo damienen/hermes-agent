@@ -1063,6 +1063,43 @@ class TestSandboxMcpTools(unittest.TestCase):
             desc = build_execute_code_schema({"terminal"})["description"]
         self.assertNotIn("mcp__", desc)
 
+    def test_script_calls_mcp_stub_and_rpc_dispatches_by_name(self):
+        captured = {}
+
+        def fake_handle(function_name, function_args, task_id=None, user_task=None):
+            captured["name"] = function_name
+            captured["args"] = function_args
+            return json.dumps({"result": {"values": [["hello"]]}})
+
+        code = (
+            "from hermes_tools import mcp__srv__sheets_read\n"
+            "r = mcp__srv__sheets_read(sheetId='abc', a1Range='Tab!A1:B2')\n"
+            "print(r['result']['values'][0][0])\n"
+        )
+        with patch("tools.code_execution_tool._load_config",
+                   return_value={"timeout": 30, "max_tool_calls": 5, "mcp_tools": True}), \
+             patch("model_tools.handle_function_call", side_effect=fake_handle):
+            result = json.loads(execute_code(
+                code, task_id="test-mcp-stub",
+                enabled_tools=["terminal", "mcp__srv__sheets_read"],
+            ))
+        self.assertEqual(result["status"], "success", result)
+        self.assertIn("hello", result["output"])
+        self.assertEqual(captured["name"], "mcp__srv__sheets_read")
+        self.assertEqual(captured["args"], {"sheetId": "abc", "a1Range": "Tab!A1:B2"})
+
+    def test_script_cannot_call_mcp_stub_when_config_disabled(self):
+        code = "from hermes_tools import mcp__srv__sheets_read\n"
+        with patch("tools.code_execution_tool._load_config",
+                   return_value={"timeout": 30, "max_tool_calls": 5}), \
+             patch("model_tools.handle_function_call", return_value=json.dumps({"ok": True})):
+            result = json.loads(execute_code(
+                code, task_id="test-mcp-stub-off",
+                enabled_tools=["terminal", "mcp__srv__sheets_read"],
+            ))
+        self.assertNotEqual(result["status"], "success")
+        self.assertIn("mcp__srv__sheets_read", result.get("error", "") + result.get("output", "") + json.dumps(result))
+
 
 if __name__ == "__main__":
     unittest.main()
