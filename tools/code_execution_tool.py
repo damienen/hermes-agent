@@ -30,6 +30,7 @@ Remote execution additionally requires Python 3 in the terminal backend.
 
 import base64
 import json
+import keyword
 import logging
 import os
 import platform
@@ -75,6 +76,82 @@ DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
 MAX_STDOUT_BYTES = 50_000    # 50 KB
 MAX_STDERR_BYTES = 10_000    # 10 KB
+
+# MCP utility tools registered per server (resources/prompts). They are
+# never useful inside a script and would only add noise to the stub module.
+_MCP_UTILITY_SUFFIXES = (
+    "__list_resources",
+    "__read_resource",
+    "__list_prompts",
+    "__get_prompt",
+)
+
+
+def _allowed_mcp_tools(session_tools: set) -> frozenset:
+    """MCP tool names the sandbox may expose, per ``code_execution.mcp_tools``.
+
+    ``false``/absent -> none (default). ``true`` -> every enabled MCP tool.
+    A list -> only tools whose server (registration provenance, falling back
+    to the sanitized ``mcp__<server>__`` prefix when provenance is missing)
+    is in the list. Utility stubs and non-identifier names are skipped.
+    """
+    setting = _load_config().get("mcp_tools", False)
+    if not setting:
+        return frozenset()
+    try:
+        from tools.mcp_tool import (
+            MCP_TOOL_NAME_PREFIX,
+            mcp_server_for_tool,
+            sanitize_mcp_name_component,
+        )
+    except Exception:
+        return frozenset()
+
+    if setting is True:
+        servers = None
+    elif isinstance(setting, (list, tuple, set)):
+        servers = {str(s) for s in setting}
+    else:
+        return frozenset()
+
+    allowed = set()
+    for name in session_tools:
+        if not isinstance(name, str) or not name.startswith(MCP_TOOL_NAME_PREFIX):
+            continue
+        if name.endswith(_MCP_UTILITY_SUFFIXES):
+            continue
+        if not name.isidentifier() or keyword.iskeyword(name):
+            continue
+        if servers is not None:
+            server = mcp_server_for_tool(name)
+            if server is not None:
+                if server not in servers:
+                    continue
+            else:
+                prefixes = tuple(
+                    f"{MCP_TOOL_NAME_PREFIX}{sanitize_mcp_name_component(s)}__" for s in servers
+                )
+                if not name.startswith(prefixes):
+                    continue
+        allowed.add(name)
+    return frozenset(allowed)
+
+
+def resolve_sandbox_tools(enabled_tools, *, fallback: bool = True) -> frozenset:
+    """The set of tools a sandbox script may call for this session.
+
+    Built-ins are ``SANDBOX_ALLOWED_TOOLS & enabled``; when that intersection
+    is empty and ``fallback`` is True, all built-ins are allowed (the
+    long-standing behaviour of the execution paths). MCP tools permitted by
+    ``code_execution.mcp_tools`` are unioned in. Schema building passes
+    ``fallback=False`` so the description never advertises tools the
+    session did not enable.
+    """
+    session = set(enabled_tools) if enabled_tools else set()
+    builtin = SANDBOX_ALLOWED_TOOLS & session
+    if not builtin and fallback:
+        builtin = SANDBOX_ALLOWED_TOOLS
+    return frozenset(builtin | _allowed_mcp_tools(session))
 
 
 def _assemble_stdout_result(
@@ -446,7 +523,7 @@ def _sandbox_failure_hint(stderr_text: str, enabled_tools=None) -> Optional[str]
         )
         if m:
             missing = m.group(1)
-            available = sorted(SANDBOX_ALLOWED_TOOLS & set(enabled_tools or SANDBOX_ALLOWED_TOOLS))
+            available = sorted(resolve_sandbox_tools(enabled_tools))
             builtin = {"json_parse", "shell_quote", "retry"}
             if missing in builtin:
                 return (
@@ -1227,10 +1304,7 @@ def _execute_remote(
     timeout = _cfg.get("timeout", DEFAULT_TIMEOUT)
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-    if not sandbox_tools:
-        sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    sandbox_tools = resolve_sandbox_tools(enabled_tools)
 
     effective_task_id = task_id or "default"
     env, env_type = _get_or_create_env(effective_task_id)
@@ -1625,11 +1699,7 @@ def execute_code(
     max_tool_calls = _cfg.get("max_tool_calls", DEFAULT_MAX_TOOL_CALLS)
 
     # Determine which tools the sandbox can call
-    session_tools = set(enabled_tools) if enabled_tools else set()
-    sandbox_tools = frozenset(SANDBOX_ALLOWED_TOOLS & session_tools)
-
-    if not sandbox_tools:
-        sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    sandbox_tools = resolve_sandbox_tools(enabled_tools)
 
     if _get_kernel_mode() == "session":
         # Session kernels keep one interpreter alive across calls; the guards

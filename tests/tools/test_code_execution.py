@@ -921,9 +921,6 @@ class TestRpcTokenAuthorization(unittest.TestCase):
         self.assertIn('"token"', src)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 # ---------------------------------------------------------------------------
 # MCP tools inside the sandbox (code_execution.mcp_tools)
 # ---------------------------------------------------------------------------
@@ -936,3 +933,65 @@ class TestSandboxMcpTools(unittest.TestCase):
             self.assertEqual(mcp_tool.mcp_server_for_tool("mcp__srv__sheets_read"), "srv")
             self.assertIsNone(mcp_tool.mcp_server_for_tool("mcp__other__x"))
             self.assertIsNone(mcp_tool.mcp_server_for_tool("terminal"))
+
+    def _resolve(self, enabled, cfg, provenance=None, **kw):
+        import tools.mcp_tool as mcp_tool
+        from tools.code_execution_tool import resolve_sandbox_tools
+        with patch("tools.code_execution_tool._load_config", return_value=cfg), \
+             patch.dict(mcp_tool._mcp_tool_server_names, provenance or {}, clear=False):
+            return resolve_sandbox_tools(enabled, **kw)
+
+    def test_mcp_tools_absent_when_config_unset(self):
+        got = self._resolve(["terminal", "mcp__srv__sheets_read"], {})
+        self.assertEqual(got, frozenset({"terminal"}))
+
+    def test_mcp_tools_absent_when_config_false(self):
+        got = self._resolve(["terminal", "mcp__srv__sheets_read"], {"mcp_tools": False})
+        self.assertEqual(got, frozenset({"terminal"}))
+
+    def test_mcp_tools_included_when_config_true(self):
+        got = self._resolve(["terminal", "mcp__srv__sheets_read", "mcp__other__ping"],
+                            {"mcp_tools": True})
+        self.assertEqual(got, frozenset({"terminal", "mcp__srv__sheets_read", "mcp__other__ping"}))
+
+    def test_mcp_server_allowlist_filters_by_provenance(self):
+        got = self._resolve(
+            ["terminal", "mcp__srv__sheets_read", "mcp__other__ping"],
+            {"mcp_tools": ["srv"]},
+            provenance={"mcp__srv__sheets_read": "srv", "mcp__other__ping": "other"},
+        )
+        self.assertEqual(got, frozenset({"terminal", "mcp__srv__sheets_read"}))
+
+    def test_mcp_server_allowlist_falls_back_to_prefix_without_provenance(self):
+        # Registry provenance is empty (e.g. tools enumerated before servers connect):
+        # match on the sanitized ``mcp__<server>__`` prefix instead of dropping everything.
+        got = self._resolve(["mcp__my_srv__x", "mcp__other__y"], {"mcp_tools": ["my-srv"]})
+        self.assertEqual(got, frozenset(SANDBOX_ALLOWED_TOOLS | {"mcp__my_srv__x"}))
+
+    def test_mcp_utility_stubs_are_skipped(self):
+        got = self._resolve(
+            ["terminal", "mcp__srv__list_resources", "mcp__srv__read_resource",
+             "mcp__srv__list_prompts", "mcp__srv__get_prompt", "mcp__srv__real"],
+            {"mcp_tools": True})
+        self.assertEqual(got, frozenset({"terminal", "mcp__srv__real"}))
+
+    def test_builtin_fallback_still_applies_with_mcp_enabled(self):
+        # No builtin overlap -> all seven builtins (existing behaviour) plus the MCP names.
+        got = self._resolve(["vision_analyze", "mcp__srv__x"], {"mcp_tools": True})
+        self.assertEqual(got, frozenset(SANDBOX_ALLOWED_TOOLS | {"mcp__srv__x"}))
+
+    def test_no_fallback_variant_for_schema_building(self):
+        got = self._resolve(["vision_analyze", "mcp__srv__x"], {"mcp_tools": True}, fallback=False)
+        self.assertEqual(got, frozenset({"mcp__srv__x"}))
+        got = self._resolve(["vision_analyze"], {}, fallback=False)
+        self.assertEqual(got, frozenset())
+
+    def test_non_identifier_and_odd_config_values_are_ignored(self):
+        got = self._resolve(["mcp__srv__bad-name", "mcp__srv__ok"], {"mcp_tools": True})
+        self.assertEqual(got, frozenset(SANDBOX_ALLOWED_TOOLS | {"mcp__srv__ok"}))
+        got = self._resolve(["mcp__srv__ok"], {"mcp_tools": "yes"})
+        self.assertEqual(got, frozenset(SANDBOX_ALLOWED_TOOLS))
+
+
+if __name__ == "__main__":
+    unittest.main()
