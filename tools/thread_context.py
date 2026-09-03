@@ -33,11 +33,32 @@ disposed CLI instance.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import logging
-from typing import Callable
+from typing import Callable, Iterator
 
 logger = logging.getLogger(__name__)
+
+# True while a tool call is being dispatched on behalf of an ``execute_code``
+# script (per-call RPC thread or session kernel).  MCP forwarding reads it to
+# tag the request ``_meta`` with ``hermes.sandbox`` so a server can tell a
+# script-driven call from a direct model call — e.g. to skip result paging
+# that only exists to keep a direct result under the agent's per-result
+# persistence threshold.  Set only by Hermes, never from tool arguments.
+sandbox_call: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "sandbox_call", default=False
+)
+
+
+@contextlib.contextmanager
+def mark_sandbox_call() -> Iterator[None]:
+    """Mark the current context as dispatching on behalf of a sandbox script."""
+    token = sandbox_call.set(True)
+    try:
+        yield
+    finally:
+        sandbox_call.reset(token)
 
 
 def _callback_api():

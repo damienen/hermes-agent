@@ -48,7 +48,7 @@ import uuid
 _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Dict, List, Optional, Tuple
 
-from tools.thread_context import propagate_context_to_thread
+from tools.thread_context import mark_sandbox_call, propagate_context_to_thread
 from agent.thread_scoped_output import thread_scoped_silence
 
 # Availability gate.  On Windows we fall back to loopback TCP for the
@@ -889,7 +889,8 @@ def _rpc_server_loop(
 
     if dispatch is None:
         def dispatch(tool_name, tool_args):
-            return handle_function_call(tool_name, tool_args, task_id=task_id)
+            with mark_sandbox_call():
+                return handle_function_call(tool_name, tool_args, task_id=task_id)
 
     conn = None
     try:
@@ -1245,7 +1246,7 @@ def _rpc_poll_loop(
 
                     # Dispatch through the standard tool handler
                     try:
-                        with thread_scoped_silence():
+                        with thread_scoped_silence(), mark_sandbox_call():
                             tool_result = handle_function_call(
                                 tool_name, tool_args, task_id=task_id
                             )

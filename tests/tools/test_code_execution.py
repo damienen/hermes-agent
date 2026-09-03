@@ -927,6 +927,27 @@ class TestRpcTokenAuthorization(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 class TestSandboxMcpTools(unittest.TestCase):
+    @unittest.skipIf(sys.platform == "win32", "UDS not available on Windows")
+    def test_rpc_dispatch_marks_sandbox_call(self):
+        """A tool call made from inside a script is dispatched with the sandbox marker set, so MCP
+        forwarding can tag its request _meta; the marker is clear again outside the dispatch."""
+        from tools.thread_context import sandbox_call
+        seen = []
+
+        def recording(function_name, function_args, task_id=None, user_task=None):
+            seen.append(sandbox_call.get())
+            return _mock_handle_function_call(function_name, function_args, task_id=task_id)
+
+        with patch("model_tools.handle_function_call", side_effect=recording):
+            result = json.loads(execute_code(
+                code='from hermes_tools import terminal\nprint(terminal(command="ls")["exit_code"])',
+                task_id="test-sandbox-flag",
+                enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
+            ))
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(seen, [True])
+        self.assertFalse(sandbox_call.get())
+
     def test_mcp_server_for_tool_uses_registration_provenance(self):
         import tools.mcp_tool as mcp_tool
         with patch.dict(mcp_tool._mcp_tool_server_names,

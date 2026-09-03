@@ -221,6 +221,7 @@ class CellAuthority:
 
     def _invoke(self, tool_name: str, tool_args: dict) -> str:
         from model_tools import handle_function_call
+        from tools.thread_context import mark_sandbox_call
 
         previous = None
         if self._callback_setters is not None:
@@ -234,7 +235,8 @@ class CellAuthority:
             except Exception:
                 previous = None
         try:
-            return handle_function_call(tool_name, tool_args, task_id=self.task_id)
+            with mark_sandbox_call():
+                return handle_function_call(tool_name, tool_args, task_id=self.task_id)
         finally:
             if previous is not None and self._callback_setters is not None:
                 set_approval, set_sudo = self._callback_setters

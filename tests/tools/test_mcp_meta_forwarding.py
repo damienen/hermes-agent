@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from tools import mcp_tool
+from tools.thread_context import mark_sandbox_call, sandbox_call
 from gateway.session_context import set_session_vars, clear_session_vars
 
 
@@ -93,3 +94,39 @@ def test_no_meta_when_no_session_context(fake_session):
     clear_session_vars([])  # force vars to "" so there is no os.environ fallback
     call = _invoke(fake_session)
     assert "meta" not in call.kwargs
+
+
+def test_sandbox_flag_forwarded_only_from_sandbox_dispatch(fake_session):
+    """A call dispatched on behalf of an execute_code script carries hermes.sandbox; a direct call does not."""
+    tokens = set_session_vars(user_id="40751")
+    try:
+        direct = _invoke(fake_session)
+        with mark_sandbox_call():
+            sandboxed = _invoke(fake_session)
+    finally:
+        clear_session_vars(tokens)
+    assert "hermes.sandbox" not in direct.kwargs["meta"]
+    assert sandboxed.kwargs["meta"] == {"hermes.sender": "40751", "hermes.sandbox": True}
+    # the marker is scoped: it resets when the block exits
+    assert sandbox_call.get() is False
+
+
+def test_sandbox_flag_never_comes_from_tool_arguments(fake_session):
+    """A model cannot forge the flag by naming it in the arguments — it is trusted metadata only."""
+    tokens = set_session_vars(user_id="40751")
+    try:
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        handler({"q": "x", "hermes.sandbox": True})
+    finally:
+        clear_session_vars(tokens)
+    call = fake_session.call_tool.call_args
+    assert call.kwargs["arguments"] == {"q": "x", "hermes.sandbox": True}  # stays a plain argument
+    assert "hermes.sandbox" not in call.kwargs["meta"]
+
+
+def test_sandbox_flag_alone_without_session_is_still_forwarded(fake_session):
+    """CLI code mode has no gateway session; the flag still rides _meta on its own."""
+    clear_session_vars([])
+    with mark_sandbox_call():
+        call = _invoke(fake_session)
+    assert call.kwargs["meta"] == {"hermes.sandbox": True}

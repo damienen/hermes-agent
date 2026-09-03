@@ -6175,6 +6175,11 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
         _media = get_session_media_paths()
         if _media:
             _meta["hermes.media"] = _media
+        # Set by the execute_code dispatch paths (tools.thread_context.mark_sandbox_call), never by
+        # the model: lets a server skip direct-call result paging for script-driven calls.
+        from tools.thread_context import sandbox_call as _sandbox_call
+        if _sandbox_call.get():
+            _meta["hermes.sandbox"] = True
 
         async def _call():
             _mark_server_call_started(server)
