@@ -5,12 +5,15 @@ from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,
-                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None):
+                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None,
+                  ignore_reactions=None):
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     extra = {}
     if require_mention is not None:
         extra["require_mention"] = require_mention
+    if ignore_reactions is not None:
+        extra["ignore_reactions"] = ignore_reactions
     if mention_patterns is not None:
         extra["mention_patterns"] = mention_patterns
     if free_response_chats is not None:
@@ -230,3 +233,40 @@ def test_broadcast_filter_runs_before_allowlist():
     assert adapter._should_process_message(msg) is False
 
 
+
+
+# --- Reactions (ignore_reactions) ---
+
+
+def _reaction(base):
+    base["body"] = "[Reaction: 👍 to ABC123]"
+    base["nativeType"] = "reactionMessage"
+    base["mediaType"] = "reaction"
+    base["hasMedia"] = False
+    return base
+
+
+def test_reactions_are_forwarded_by_default():
+    adapter = _make_adapter(dm_policy="open", allow_from=["*"])
+    adapter._open_dm_opted_in = lambda: True
+    assert adapter._should_process_message(_reaction(_dm_message())) is True
+
+
+def test_ignore_reactions_drops_dm_reaction():
+    adapter = _make_adapter(dm_policy="open", allow_from=["*"], ignore_reactions=True)
+    adapter._open_dm_opted_in = lambda: True
+    assert adapter._should_process_message(_reaction(_dm_message())) is False
+    # A real DM still goes through.
+    assert adapter._should_process_message(_dm_message("hello")) is True
+
+
+def test_ignore_reactions_drops_group_reaction_even_without_mention_gating():
+    adapter = _make_adapter(group_policy="open", require_mention=False, ignore_reactions=True)
+    assert adapter._should_process_message(_reaction(_group_message())) is False
+    assert adapter._should_process_message(_group_message("hello")) is True
+
+
+def test_ignore_reactions_accepts_env_string_forms(monkeypatch):
+    monkeypatch.setenv("WHATSAPP_IGNORE_REACTIONS", "yes")
+    adapter = _make_adapter(group_policy="open", require_mention=False)
+    assert adapter._should_process_message(_reaction(_group_message())) is False

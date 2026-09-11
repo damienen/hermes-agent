@@ -124,6 +124,34 @@ class WhatsAppBehaviorMixin:
         # code-fence repair even if a user configures a very long prefix.
         return max(1024, self.MAX_MESSAGE_LENGTH - prefix_len)
 
+    def _whatsapp_ignore_reactions(self) -> bool:
+        """Drop emoji reactions instead of forwarding them as messages.
+
+        The bridge surfaces a reaction as a text event (``[Reaction: 👍 to
+        <id>]``, ``nativeType`` ``reactionMessage``). In a DM, or in a group
+        with mention gating off, that event reaches the agent like any other
+        message and it answers a thumbs-up. Off by default to keep the
+        upstream behaviour; ``ignore_reactions: true`` in ``platforms.whatsapp.extra``
+        (or ``WHATSAPP_IGNORE_REACTIONS``) turns it on.
+        """
+        configured = self.config.extra.get("ignore_reactions")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return (_get_wsecret("WHATSAPP_IGNORE_REACTIONS", default="false") or "false").lower() in {
+            "true",
+            "1",
+            "yes",
+            "on",
+        }
+
+    @staticmethod
+    def _is_reaction_event(data: Dict[str, Any]) -> bool:
+        native_type = str(data.get("nativeType") or "").strip()
+        media_type = str(data.get("mediaType") or "").strip()
+        return native_type == "reactionMessage" or media_type == "reaction"
+
     def _whatsapp_require_mention(self) -> bool:
         configured = self.config.extra.get("require_mention")
         if configured is not None:
@@ -394,6 +422,11 @@ class WhatsAppBehaviorMixin:
         # and the agent should never reply to them — even in self-chat mode
         # where the bridge may surface them as "fromMe" events.
         if self._is_broadcast_chat(chat_id_raw):
+            return False
+        # A reaction is feedback, not a message; when configured, it never
+        # wakes the agent, in DMs or in groups (mention gating cannot catch
+        # it: a reaction has no mention and no quoted message).
+        if self._whatsapp_ignore_reactions() and self._is_reaction_event(data):
             return False
         is_group = data.get("isGroup", False)
         if is_group:
